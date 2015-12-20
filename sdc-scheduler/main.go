@@ -53,13 +53,14 @@ var (
 	master              = flag.String("master", "127.0.0.1:5050", "Master address <ip:port>")
 	executorPath        = flag.String("executor", "./executor", "Path to test executor")
 	// taskCount           = flag.String("task-count", "3", "Total task count to run.")
-	taskCount           = flag.String("task-count", "5", "Total task count to run.")
+	taskCount           = flag.String("task-count", "10", "Total task count to run.")
 	mesosAuthPrincipal  = flag.String("mesos_authentication_principal", "", "Mesos authentication principal.")
 	mesosAuthSecretFile = flag.String("mesos_authentication_secret_file", "", "Mesos authentication secret file.")
 
 	// files  = []string{"/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt"}
-	files  = []string{}
-	target = NewTargetFile(files)
+	// files  = []string{}
+	// target = NewTargetFile(files)
+	// args = []string{}
 )
 
 type ExampleScheduler struct {
@@ -69,11 +70,11 @@ type ExampleScheduler struct {
 	totalTasks    int
 }
 
-func newExampleScheduler(exec *mesos.ExecutorInfo) *ExampleScheduler {
-	total, err := strconv.Atoi(*taskCount)
-	if err != nil {
-		total = 5
-	}
+func newExampleScheduler(exec *mesos.ExecutorInfo, total int) *ExampleScheduler {
+	// total, err := strconv.Atoi(*taskCount)
+	// if err != nil {
+	//	total = 5
+	// }
 	return &ExampleScheduler{
 		executor:      exec,
 		tasksLaunched: 0,
@@ -95,7 +96,6 @@ func (sched *ExampleScheduler) Disconnected(sched.SchedulerDriver) {
 }
 
 func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offers []*mesos.Offer) {
-
 	if sched.tasksLaunched >= sched.totalTasks {
 		log.Info("decline all of the offers since all of our tasks are already launched")
 		ids := make([]*mesos.OfferID, len(offers))
@@ -108,13 +108,18 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 
 
 	log.Info("prepare pass args: ", sched.executor.Command.Arguments)
+	cmds := sched.executor.Command.Arguments
+        for _, v := range cmds {
+                fmt.Println("v = ", v)
+        }
+
         // [/bin/cat /var/tmp/1.txt /var/tmp/2.txt /var/tmp/3.txt | /bin/grep abe > /var/tmp/grep-result.txt]
 	// 
 	// rebuild args
 	// 1. /bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt
 	// 2. /bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt
 	// 3. /bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt
-	// 4. /bin/grep abe > /var/tmp/grep-result.txt
+	// 4. /bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt
 	// 5. /bin/rm /var/tmp/intermediate.txt
 
 	for _, offer := range offers {
@@ -160,13 +165,8 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 			// executionidの書き換え
 			sched.executor.ExecutorId = util.NewExecutorID(taskId.GetValue())
 
-			// file := fmt.Sprintf("/var/tmp/%s.txt", taskId.GetValue())
 			log.Infof("sched.tasksLaunched = %d\n", sched.tasksLaunched)
 			log.Infof("sched.totalTasks = %d\n", sched.totalTasks)
-
-			file := target.Shift()
-			log.Infof("file name = %s\n", file)
-			log.Infof("files len = %d\n", target.GetLen())
 
 			// sched.executor.Command.Arguments で書き換えても保持されている
 			// 値はポインタなので、LaunchTasksするときに、複数のタスクでまとめられているので、
@@ -182,16 +182,12 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
                     	 		Uris:  sched.executor.Command.GetUris(),
                			},
 			}
-			// exec.Command.Arguments = []string{"/bin/cat", file}
 
-                        if sched.tasksLaunched == sched.totalTasks {
-				exec.Command.Arguments = []string{"/bin/rm", "/var/tmp/intermediate.txt"}
-			} else if file == "" {
-				// exec.Command.Arguments = []string{"wc -l", "/var/tmp/intermediate.txt", ">", "/var/tmp/wc-result.txt"}
-				exec.Command.Arguments = []string{"/bin/grep", "abe", "/var/tmp/intermediate.txt", ">", "/var/tmp/grep-result.txt"}
-			} else {
-				exec.Command.Arguments = []string{"/bin/cat", file, ">>", "/var/tmp/intermediate.txt"}
-			}
+			cmd := cmds[sched.tasksLaunched - 1]
+			log.Infof("cmd = %s\n", cmd)
+			// cmds = cmds[1:]
+			// log.Infof("cmds = %v", cmds)
+			exec.Command.Arguments = strings.Split(cmd, " ")
 
 			task := &mesos.TaskInfo{
 				Name:     proto.String("go-task-" + taskId.GetValue()),
@@ -334,38 +330,13 @@ func parseIP(address string) net.IP {
 	return addr[0]
 }
 
-type TargetFile struct {
-        files []string
-}
-
-func NewTargetFile(files []string) *TargetFile {
-        targetFile := &TargetFile{files: files}
-        return targetFile
-}
-
-func (target *TargetFile) GetLen() int {
-        return len(target.files)
-}
-
-func (target *TargetFile) Shift() string {
-	if target.GetLen() != 0 {
-        	val := target.files[0]
-        	target.files = target.files[1:]
-        	return val
-        } else {
-		return ""
-        }
-}
-
 // ----------------------- func main() ------------------------- //
 
 func main() {
-	// target files
-	files  = []string{"/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt"}
-	target = NewTargetFile(files)
-
 	// build command executor
-	args := []string{"/bin/cat", "/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt", "|", "/bin/grep", "abe", ">", "/var/tmp/grep-result.txt"}
+	// args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "date", "/bin/rm /var/tmp/intermediate.txt"}
+	args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "/bin/rm /var/tmp/intermediate.txt"}
+
 	exec := prepareExecutorInfo(args)
 
 	// the framework
@@ -388,7 +359,7 @@ func main() {
 	}
 	bindingAddress := parseIP(*address)
 	config := sched.DriverConfig{
-		Scheduler:      newExampleScheduler(exec),
+		Scheduler:      newExampleScheduler(exec, len(args)),
 		Framework:      fwinfo,
 		Master:         *master,
 		Credential:     cred,
