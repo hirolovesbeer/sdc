@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+//	"time"
 
 	"github.com/gogo/protobuf/proto"
 	log "github.com/golang/glog"
@@ -51,12 +52,13 @@ var (
 		fmt.Sprintf("Authentication provider to use, default is SASL that supports mechanisms: %+v", mech.ListSupported()))
 	master              = flag.String("master", "127.0.0.1:5050", "Master address <ip:port>")
 	executorPath        = flag.String("executor", "./executor", "Path to test executor")
-	taskCount           = flag.String("task-count", "3", "Total task count to run.")
-	// taskCount           = flag.String("task-count", "5", "Total task count to run.")
+	// taskCount           = flag.String("task-count", "3", "Total task count to run.")
+	taskCount           = flag.String("task-count", "5", "Total task count to run.")
 	mesosAuthPrincipal  = flag.String("mesos_authentication_principal", "", "Mesos authentication principal.")
 	mesosAuthSecretFile = flag.String("mesos_authentication_secret_file", "", "Mesos authentication secret file.")
 
-	files  = []string{"/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt"}
+	// files  = []string{"/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt"}
+	files  = []string{}
 	target = NewTargetFile(files)
 )
 
@@ -104,7 +106,16 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 		return
 	}
 
-	// files := []string{"/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt"}
+
+	log.Info("prepare pass args: ", sched.executor.Command.Arguments)
+        // [/bin/cat /var/tmp/1.txt /var/tmp/2.txt /var/tmp/3.txt | /bin/grep abe > /var/tmp/grep-result.txt]
+	// 
+	// rebuild args
+	// 1. /bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt
+	// 2. /bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt
+	// 3. /bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt
+	// 4. /bin/grep abe > /var/tmp/grep-result.txt
+	// 5. /bin/rm /var/tmp/intermediate.txt
 
 	for _, offer := range offers {
 		cpuResources := util.FilterResources(offer.Resources, func(res *mesos.Resource) bool {
@@ -129,6 +140,13 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 		remainingMems := mems
 
 		var tasks []*mesos.TaskInfo
+
+                // $ cat 1.txt 2.txt. 3.txt | wc -lの場合
+                // 先に、後ろのタスクを上げておく必要がある？
+                // 
+                // コンセプト実装はシンプルに中間ファイル方式で行く
+                // 遅いけど
+
 		for sched.tasksLaunched < sched.totalTasks &&
 			CPUS_PER_TASK <= remainingCpus &&
 			MEM_PER_TASK <= remainingMems {
@@ -141,14 +159,16 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 
 			// executionidの書き換え
 			sched.executor.ExecutorId = util.NewExecutorID(taskId.GetValue())
-	
+
 			// file := fmt.Sprintf("/var/tmp/%s.txt", taskId.GetValue())
+			log.Infof("sched.tasksLaunched = %d\n", sched.tasksLaunched)
+			log.Infof("sched.totalTasks = %d\n", sched.totalTasks)
+
 			file := target.Shift()
 			log.Infof("file name = %s\n", file)
-			log.Infof("files len = %d\n", len(files))
-			sched.executor.Command.Arguments = []string{"/bin/cat", file}
+			log.Infof("files len = %d\n", target.GetLen())
 
-			// sched.executor.Command.Arguments で書き換えても持っている保持されている
+			// sched.executor.Command.Arguments で書き換えても保持されている
 			// 値はポインタなので、LaunchTasksするときに、複数のタスクでまとめられているので、
 			// 値は最後に上書きされた物になる
 			// そこで、Argumentsがタスクごとにまとめられないように個別にオブジェクトを生成してタスクを
@@ -157,12 +177,21 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 				ExecutorId: sched.executor.GetExecutorId(),
 				Name:	    proto.String(sched.executor.GetName()),
 				Source:	    proto.String(sched.executor.GetSource()),
-		                Command: &mesos.CommandInfo{
-                			Value: proto.String(sched.executor.Command.GetValue()),
-                       	 		Uris:  sched.executor.Command.GetUris(),
-                		},
+	                	Command: &mesos.CommandInfo{
+               				Value: proto.String(sched.executor.Command.GetValue()),
+                    	 		Uris:  sched.executor.Command.GetUris(),
+               			},
 			}
-			exec.Command.Arguments = []string{"/bin/cat", file}
+			// exec.Command.Arguments = []string{"/bin/cat", file}
+
+                        if sched.tasksLaunched == sched.totalTasks {
+				exec.Command.Arguments = []string{"/bin/rm", "/var/tmp/intermediate.txt"}
+			} else if file == "" {
+				// exec.Command.Arguments = []string{"wc -l", "/var/tmp/intermediate.txt", ">", "/var/tmp/wc-result.txt"}
+				exec.Command.Arguments = []string{"/bin/grep", "abe", "/var/tmp/intermediate.txt", ">", "/var/tmp/grep-result.txt"}
+			} else {
+				exec.Command.Arguments = []string{"/bin/cat", file, ">>", "/var/tmp/intermediate.txt"}
+			}
 
 			task := &mesos.TaskInfo{
 				Name:     proto.String("go-task-" + taskId.GetValue()),
@@ -185,6 +214,8 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 		log.Infoln("Launching ", len(tasks), "tasks for offer", offer.Id.GetValue())
 		driver.LaunchTasks([]*mesos.OfferID{offer.Id}, tasks, &mesos.Filters{RefuseSeconds: proto.Float64(5)})
 	}
+
+        // time.Sleep(30 * time.Second)
 }
 
 func (sched *ExampleScheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos.TaskStatus) {
@@ -258,7 +289,7 @@ func serveExecutorArtifact(path string) (*string, string) {
 	return &hostURI, base
 }
 
-func prepareExecutorInfo() *mesos.ExecutorInfo {
+func prepareExecutorInfo(args []string) *mesos.ExecutorInfo {
 	executorUris := []*mesos.CommandInfo_URI{}
 	uri, executorCmd := serveExecutorArtifact(*executorPath)
 	executorUris = append(executorUris, &mesos.CommandInfo_URI{Value: uri, Executable: proto.Bool(true)})
@@ -278,9 +309,6 @@ func prepareExecutorInfo() *mesos.ExecutorInfo {
 
 	go http.ListenAndServe(fmt.Sprintf("%s:%d", *address, *artifactPort), nil)
 	log.V(2).Info("Serving executor artifacts...")
-
-        // pass the args to executor
-	args := []string{"/usr/bin/head", "-n", "10", "/var/log/mesos/mesos-master.INFO"}
 
 	// Create mesos scheduler driver.
 	return &mesos.ExecutorInfo{
@@ -320,16 +348,25 @@ func (target *TargetFile) GetLen() int {
 }
 
 func (target *TargetFile) Shift() string {
-        val := target.files[0]
-        target.files = target.files[1:]
-        return val
+	if target.GetLen() != 0 {
+        	val := target.files[0]
+        	target.files = target.files[1:]
+        	return val
+        } else {
+		return ""
+        }
 }
 
 // ----------------------- func main() ------------------------- //
 
 func main() {
+	// target files
+	files  = []string{"/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt"}
+	target = NewTargetFile(files)
+
 	// build command executor
-	exec := prepareExecutorInfo()
+	args := []string{"/bin/cat", "/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt", "|", "/bin/grep", "abe", ">", "/var/tmp/grep-result.txt"}
+	exec := prepareExecutorInfo(args)
 
 	// the framework
 	fwinfo := &mesos.FrameworkInfo{
