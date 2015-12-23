@@ -26,7 +26,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-//	"time"
+	"container/list"
 
 	"github.com/gogo/protobuf/proto"
 	log "github.com/golang/glog"
@@ -52,30 +52,21 @@ var (
 		fmt.Sprintf("Authentication provider to use, default is SASL that supports mechanisms: %+v", mech.ListSupported()))
 	master              = flag.String("master", "127.0.0.1:5050", "Master address <ip:port>")
 	executorPath        = flag.String("executor", "./executor", "Path to test executor")
-	// taskCount           = flag.String("task-count", "3", "Total task count to run.")
-	taskCount           = flag.String("task-count", "10", "Total task count to run.")
 	mesosAuthPrincipal  = flag.String("mesos_authentication_principal", "", "Mesos authentication principal.")
 	mesosAuthSecretFile = flag.String("mesos_authentication_secret_file", "", "Mesos authentication secret file.")
-
-	// files  = []string{"/var/tmp/1.txt", "/var/tmp/2.txt", "/var/tmp/3.txt"}
-	// files  = []string{}
-	// target = NewTargetFile(files)
-	// args = []string{}
+	cmdQueue = list.New()
+	executorUris = []*mesos.CommandInfo_URI{}
 )
 
-type ExampleScheduler struct {
+type SdcScheduler struct {
 	executor      *mesos.ExecutorInfo
 	tasksLaunched int
 	tasksFinished int
 	totalTasks    int
 }
 
-func newExampleScheduler(exec *mesos.ExecutorInfo, total int) *ExampleScheduler {
-	// total, err := strconv.Atoi(*taskCount)
-	// if err != nil {
-	//	total = 5
-	// }
-	return &ExampleScheduler{
+func newSdcScheduler(exec *mesos.ExecutorInfo, total int) *SdcScheduler {
+	return &SdcScheduler{
 		executor:      exec,
 		tasksLaunched: 0,
 		tasksFinished: 0,
@@ -83,29 +74,44 @@ func newExampleScheduler(exec *mesos.ExecutorInfo, total int) *ExampleScheduler 
 	}
 }
 
-func (sched *ExampleScheduler) Registered(driver sched.SchedulerDriver, frameworkId *mesos.FrameworkID, masterInfo *mesos.MasterInfo) {
+func (sched *SdcScheduler) Registered(driver sched.SchedulerDriver, frameworkId *mesos.FrameworkID, masterInfo *mesos.MasterInfo) {
 	log.Infoln("Framework Registered with Master ", masterInfo)
 }
 
-func (sched *ExampleScheduler) Reregistered(driver sched.SchedulerDriver, masterInfo *mesos.MasterInfo) {
+func (sched *SdcScheduler) Reregistered(driver sched.SchedulerDriver, masterInfo *mesos.MasterInfo) {
 	log.Infoln("Framework Re-Registered with Master ", masterInfo)
 }
 
-func (sched *ExampleScheduler) Disconnected(sched.SchedulerDriver) {
+func (sched *SdcScheduler) Disconnected(sched.SchedulerDriver) {
 	log.Fatalf("disconnected from master, aborting")
 }
 
-func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offers []*mesos.Offer) {
+func (sched *SdcScheduler) ResourceOffers(driver sched.SchedulerDriver, offers []*mesos.Offer) {
 	if sched.tasksLaunched >= sched.totalTasks {
 		log.Info("decline all of the offers since all of our tasks are already launched")
-		ids := make([]*mesos.OfferID, len(offers))
-		for i, offer := range offers {
-			ids[i] = offer.Id
-		}
-		driver.LaunchTasks(ids, []*mesos.TaskInfo{}, &mesos.Filters{RefuseSeconds: proto.Float64(120)})
-		return
-	}
+                log.Infoln("sched.totalTasks ", sched.totalTasks)
+                log.Infoln("sched.tasksFinished ", sched.tasksFinished)
+                log.Infoln("sched.tasksLaunched ", sched.tasksLaunched)
 
+		// cmdQueueからCommand.Argumentsをpopする
+		// 将来的に外部のキューから取得できるように置き換える
+		if sched.totalTasks == 0 && sched.tasksFinished == 0 && sched.tasksLaunched ==0 && cmdQueue.Len() != 0 {
+			execinfo := cmdQueue.Remove(cmdQueue.Front()).(*mesos.ExecutorInfo)
+                	log.Infoln("execinfo ", execinfo.Command.Arguments)
+
+			sched.totalTasks = len(execinfo.Command.Arguments)
+			sched.executor.Command.Arguments = execinfo.Command.Arguments
+		} 
+
+		if sched.totalTasks == 0 && sched.tasksFinished == 0 && sched.tasksLaunched == 0 {
+			ids := make([]*mesos.OfferID, len(offers))
+			for i, offer := range offers {
+				ids[i] = offer.Id
+			}
+			driver.LaunchTasks(ids, []*mesos.TaskInfo{}, &mesos.Filters{RefuseSeconds: proto.Float64(5)})
+			return
+		}
+	}
 
 	log.Info("prepare pass args: ", sched.executor.Command.Arguments)
 	cmds := sched.executor.Command.Arguments
@@ -163,10 +169,14 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 			}
 
 			// executionidの書き換え
-			sched.executor.ExecutorId = util.NewExecutorID(taskId.GetValue())
+			// sched.executor.ExecutorId = util.NewExecutorID(taskId.GetValue())
+			exec_id := fmt.Sprintf("%s-%s", offer.Id.GetValue(), taskId.GetValue())
+			sched.executor.ExecutorId = util.NewExecutorID(exec_id)
 
 			log.Infof("sched.tasksLaunched = %d\n", sched.tasksLaunched)
 			log.Infof("sched.totalTasks = %d\n", sched.totalTasks)
+			log.Infof("sched.executor.Command.Value = %s\n", sched.executor.Command.GetValue())
+			log.Infof("sched.executor.GetExecutorId() = %s\n", sched.executor.GetExecutorId())
 
 			// sched.executor.Command.Arguments で書き換えても保持されている
 			// 値はポインタなので、LaunchTasksするときに、複数のタスクでまとめられているので、
@@ -185,12 +195,11 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 
 			cmd := cmds[sched.tasksLaunched - 1]
 			log.Infof("cmd = %s\n", cmd)
-			// cmds = cmds[1:]
-			// log.Infof("cmds = %v", cmds)
 			exec.Command.Arguments = strings.Split(cmd, " ")
 
 			task := &mesos.TaskInfo{
-				Name:     proto.String("go-task-" + taskId.GetValue()),
+				// Name:     proto.String("go-task-" + taskId.GetValue()),
+				Name:     proto.String(exec_id),
 				TaskId:   taskId,
 				SlaveId:  offer.SlaveId,
 				// Executor: sched.executor,
@@ -210,19 +219,21 @@ func (sched *ExampleScheduler) ResourceOffers(driver sched.SchedulerDriver, offe
 		log.Infoln("Launching ", len(tasks), "tasks for offer", offer.Id.GetValue())
 		driver.LaunchTasks([]*mesos.OfferID{offer.Id}, tasks, &mesos.Filters{RefuseSeconds: proto.Float64(5)})
 	}
-
-        // time.Sleep(30 * time.Second)
 }
 
-func (sched *ExampleScheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos.TaskStatus) {
+func (sched *SdcScheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos.TaskStatus) {
 	log.Infoln("Status update: task", status.TaskId.GetValue(), " is in state ", status.State.Enum().String())
 	if status.GetState() == mesos.TaskState_TASK_FINISHED {
 		sched.tasksFinished++
 	}
 
 	if sched.tasksFinished >= sched.totalTasks {
-		log.Infoln("Total tasks completed, stopping framework.")
-		driver.Stop(false)
+		// log.Infoln("Total tasks completed, stopping framework.")
+		log.Infoln("Total tasks completed.")
+		sched.tasksFinished = 0
+		sched.totalTasks = 0
+		sched.tasksLaunched = 0
+		// driver.Stop(false)
 	}
 
 	if status.GetState() == mesos.TaskState_TASK_LOST ||
@@ -238,19 +249,19 @@ func (sched *ExampleScheduler) StatusUpdate(driver sched.SchedulerDriver, status
 	}
 }
 
-func (sched *ExampleScheduler) OfferRescinded(_ sched.SchedulerDriver, oid *mesos.OfferID) {
+func (sched *SdcScheduler) OfferRescinded(_ sched.SchedulerDriver, oid *mesos.OfferID) {
 	log.Errorf("offer rescinded: %v", oid)
 }
-func (sched *ExampleScheduler) FrameworkMessage(_ sched.SchedulerDriver, eid *mesos.ExecutorID, sid *mesos.SlaveID, msg string) {
+func (sched *SdcScheduler) FrameworkMessage(_ sched.SchedulerDriver, eid *mesos.ExecutorID, sid *mesos.SlaveID, msg string) {
 	log.Errorf("framework message from executor %q slave %q: %q", eid, sid, msg)
 }
-func (sched *ExampleScheduler) SlaveLost(_ sched.SchedulerDriver, sid *mesos.SlaveID) {
+func (sched *SdcScheduler) SlaveLost(_ sched.SchedulerDriver, sid *mesos.SlaveID) {
 	log.Errorf("slave lost: %v", sid)
 }
-func (sched *ExampleScheduler) ExecutorLost(_ sched.SchedulerDriver, eid *mesos.ExecutorID, sid *mesos.SlaveID, code int) {
+func (sched *SdcScheduler) ExecutorLost(_ sched.SchedulerDriver, eid *mesos.ExecutorID, sid *mesos.SlaveID, code int) {
 	log.Errorf("executor %q lost on slave %q code %d", eid, sid, code)
 }
-func (sched *ExampleScheduler) Error(_ sched.SchedulerDriver, err string) {
+func (sched *SdcScheduler) Error(_ sched.SchedulerDriver, err string) {
 	log.Errorf("Scheduler received error:", err)
 }
 
@@ -258,7 +269,7 @@ func (sched *ExampleScheduler) Error(_ sched.SchedulerDriver, err string) {
 
 func init() {
 	flag.Parse()
-	log.Infoln("Initializing the Example Scheduler...")
+	log.Infoln("Initializing the SDC Scheduler...")
 }
 
 // returns (downloadURI, basename(path))
@@ -286,9 +297,13 @@ func serveExecutorArtifact(path string) (*string, string) {
 }
 
 func prepareExecutorInfo(args []string) *mesos.ExecutorInfo {
-	executorUris := []*mesos.CommandInfo_URI{}
-	uri, executorCmd := serveExecutorArtifact(*executorPath)
-	executorUris = append(executorUris, &mesos.CommandInfo_URI{Value: uri, Executable: proto.Bool(true)})
+	var uri *string
+	var executorCmd string = ""
+
+	if len(executorUris) == 0 {
+		uri, executorCmd = serveExecutorArtifact(*executorPath)
+		executorUris = append(executorUris, &mesos.CommandInfo_URI{Value: uri, Executable: proto.Bool(true)})
+	}
 	log.Infof("uri = %s, executorcmd = %s\n", uri, executorCmd)
 	log.Infof("executorUris = %s\n", executorUris)
 
@@ -309,8 +324,8 @@ func prepareExecutorInfo(args []string) *mesos.ExecutorInfo {
 	// Create mesos scheduler driver.
 	return &mesos.ExecutorInfo{
 		ExecutorId: util.NewExecutorID("default"),
-		Name:       proto.String("Test Executor (Go)"),
-		Source:     proto.String("go_test"),
+		Name:       proto.String("SDC Executor (Go)"),
+		Source:     proto.String("sdc"),
 		Command: &mesos.CommandInfo{
 			Value: proto.String(executorCommand),
 			Uris:  executorUris,
@@ -336,8 +351,13 @@ func main() {
 	// build command executor
 	// args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "date", "/bin/rm /var/tmp/intermediate.txt"}
 	args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "/bin/rm /var/tmp/intermediate.txt"}
+	args2 := []string{"/bin/cat /var/tmp/1.txt", "/bin/date"}
 
 	exec := prepareExecutorInfo(args)
+	cmdQueue.PushBack(exec)
+
+	exec = prepareExecutorInfo(args2)
+	cmdQueue.PushBack(exec)
 
 	// the framework
 	fwinfo := &mesos.FrameworkInfo{
@@ -358,8 +378,11 @@ func main() {
 		}
 	}
 	bindingAddress := parseIP(*address)
+
+	execinfo := cmdQueue.Remove(cmdQueue.Front()).(*mesos.ExecutorInfo)
+
 	config := sched.DriverConfig{
-		Scheduler:      newExampleScheduler(exec, len(args)),
+		Scheduler:      newSdcScheduler(execinfo, len(execinfo.Command.Arguments)),
 		Framework:      fwinfo,
 		Master:         *master,
 		Credential:     cred,
