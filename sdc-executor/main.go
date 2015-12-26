@@ -21,7 +21,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"strings"
 	osexec "os/exec"
 
 	exec "github.com/mesos/mesos-go/executor"
@@ -76,8 +75,9 @@ func (exec *exampleExecutor) LaunchTask(driver exec.ExecutorDriver, taskInfo *me
 	fmt.Println("Launching task", taskInfo.GetName(), "with command[GetValue]", cmd.GetValue())
 	fmt.Println("Launching task", taskInfo.GetName(), "with command[GetShell]", cmd.GetShell())
 	fmt.Println("Launching task", taskInfo.GetName(), "with command[GetArguments]", cmd.GetArguments())
+	fmt.Println("Launching task", taskInfo.GetName(), "with taskInfo.GetData()", string(taskInfo.GetData()))
 
-	execcmd := strings.Join(cmd.GetArguments(), " ")
+	execcmd := string(taskInfo.GetData())
 	fmt.Printf("execcmd = %s\n", execcmd)
 
 	runStatus := &mesos.TaskStatus{

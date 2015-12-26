@@ -9,7 +9,7 @@ import (
 )
 
 type Message struct {
-        Message []string `json:"Message"`
+	Message []string `json:"Message"`
 }
 
 type Response struct {
@@ -17,7 +17,7 @@ type Response struct {
 }
 
 func main() {
-        args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "/bin/rm /var/tmp/intermediate.txt"}
+	args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "/bin/rm /var/tmp/intermediate.txt"}
 
 	msg := &Message{Message: args}
 

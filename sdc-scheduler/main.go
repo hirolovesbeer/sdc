@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"container/list"
+	"encoding/json"
 
 	"github.com/gogo/protobuf/proto"
 	log "github.com/golang/glog"
@@ -169,9 +170,7 @@ func (sched *SdcScheduler) ResourceOffers(driver sched.SchedulerDriver, offers [
 			}
 
 			// executionidの書き換え
-			// sched.executor.ExecutorId = util.NewExecutorID(taskId.GetValue())
-			exec_id := fmt.Sprintf("%s-%s", offer.Id.GetValue(), taskId.GetValue())
-			sched.executor.ExecutorId = util.NewExecutorID(exec_id)
+			sched.executor.ExecutorId = util.NewExecutorID(taskId.GetValue())
 
 			log.Infof("sched.tasksLaunched = %d\n", sched.tasksLaunched)
 			log.Infof("sched.totalTasks = %d\n", sched.totalTasks)
@@ -195,19 +194,21 @@ func (sched *SdcScheduler) ResourceOffers(driver sched.SchedulerDriver, offers [
 
 			cmd := cmds[sched.tasksLaunched - 1]
 			log.Infof("cmd = %s\n", cmd)
-			exec.Command.Arguments = strings.Split(cmd, " ")
+			// Argumentsコマンドラインを使うと別Executorとみなされるので、色々面倒
+			// 以下はやってはいけない例
+			// exec.Command.Arguments = strings.Split(cmd, " ")
 
 			task := &mesos.TaskInfo{
-				// Name:     proto.String("go-task-" + taskId.GetValue()),
-				Name:     proto.String(exec_id),
+				Name:     proto.String("go-task-" + taskId.GetValue()),
 				TaskId:   taskId,
 				SlaveId:  offer.SlaveId,
-				// Executor: sched.executor,
 				Executor: exec,
 				Resources: []*mesos.Resource{
 					util.NewScalarResource("cpus", CPUS_PER_TASK),
 					util.NewScalarResource("mem", MEM_PER_TASK),
 				},
+				// 実行したいコマンドラインはDataパラメータを使って渡せす
+				Data: []byte(cmd),
 			}
 			log.Infof("Prepared task: %s with offer %s for launch\n", task.GetName(), offer.Id.GetValue())
 
@@ -223,8 +224,13 @@ func (sched *SdcScheduler) ResourceOffers(driver sched.SchedulerDriver, offers [
 
 func (sched *SdcScheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos.TaskStatus) {
 	log.Infoln("Status update: task", status.TaskId.GetValue(), " is in state ", status.State.Enum().String())
+	
 	if status.GetState() == mesos.TaskState_TASK_FINISHED {
 		sched.tasksFinished++
+		// KillTaskを実行するとTASK_LOSTが検知され、フレームワークが止まる
+		// driver.KillTask(status.TaskId)
+		// log.Infoln("!! Status update: task", status.TaskId.GetValue(), " is in state ", status.State.Enum().String())
+		// return
 	}
 
 	if sched.tasksFinished >= sched.totalTasks {
@@ -345,9 +351,68 @@ func parseIP(address string) net.IP {
 	return addr[0]
 }
 
+// ----------------------- json server ------------------------- //
+type Response struct {
+        Message string
+}
+
+type Request struct {
+        Message []string
+}
+
+func jsonHandleFunc(rw http.ResponseWriter, req *http.Request) {
+        // output := newMessage("OK")
+        output := Response{"OK"}
+
+        defer func() {
+                outjson, e := json.Marshal(output)
+                if e != nil {
+                        fmt.Println(e)
+                }
+                rw.Header().Set("Content-Type", "application/json")
+                fmt.Fprint(rw, string(outjson))
+        }()
+
+        if req.Method != "POST" {
+                output.Message = "Not POST Method. Post only."
+                return
+        }
+
+        body, e := ioutil.ReadAll(req.Body)
+        if e != nil {
+                output.Message = e.Error()
+                fmt.Println(e.Error())
+                return
+        }
+
+        // input := newMessage("fuga")
+        input := Request{}
+        e = json.Unmarshal(body, &input)
+        if e != nil {
+                output.Message = e.Error()
+                // output.Out = e.Error()
+                fmt.Println(e.Error())
+                return
+        }
+
+	exec := prepareExecutorInfo(input.Message)
+        cmdQueue.PushBack(exec)
+
+        fmt.Printf("%#v\n", input)
+}
+
 // ----------------------- func main() ------------------------- //
 
 func main() {
+	// start json server
+        go func() {
+                fs := http.FileServer(http.Dir("static"))
+                http.Handle("/", fs)
+                http.HandleFunc("/json", jsonHandleFunc)
+                http.ListenAndServe(":8888", nil)
+        }()
+
+
 	// build command executor
 	// args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "date", "/bin/rm /var/tmp/intermediate.txt"}
 	args := []string{"/bin/cat /var/tmp/1.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/2.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/3.txt >> /var/tmp/intermediate.txt", "/bin/cat /var/tmp/intermediate.txt | /bin/grep abe > /var/tmp/grep-result.txt", "/bin/rm /var/tmp/intermediate.txt"}
