@@ -43,7 +43,7 @@ class MyExecutor(mesos.interface.Executor):
             driver.sendStatusUpdate(update)
 
             # This is where one would perform the requested task.
-            hdfs = hdfs3.HDFileSystem(host='172.16.38.181', port=8020)
+            hdfs = hdfs3.HDFileSystem(host='address to name node', port=8020)
 
             filenames = hdfs.glob('/tmp/csv/*')
             print(filenames[0])
